@@ -5,7 +5,7 @@ use qtable::strategy;
 /// AcrobotObservation をそのまま使えば連続的な物理量を扱えるが、
 /// 元の Python コードベースを尊重して離散的な AcrobotState を用いている
 fn get_reward(task: &AcrobotBalanceTask, state: &AcrobotState, action: &AcrobotAction) -> f64 {
-    if task.should_finish_episode(state) {
+    if state.should_finish_episode() {
         return -2000.0;
     }
 
@@ -14,24 +14,24 @@ fn get_reward(task: &AcrobotBalanceTask, state: &AcrobotState, action: &AcrobotA
     let pend_vel_center = task.n_pendulum_digitization as f64 / 2.0;
     let arm_vel_center = task.n_arm_digitization as f64 / 2.0;
 
-    if (state.n_pendulum_rad as f64 - pend_pos_center).abs() < 1.0
-        && (state.n_arm_rad as f64 - arm_pos_center).abs() < 1.0
-        && (state.n_pendulum_vel as f64 - pend_vel_center).abs() < 1.0
-        && (state.n_arm_vel as f64 - arm_vel_center).abs() < 1.0
+    if (state.n_pendulum_rad() as f64 - pend_pos_center).abs() < 1.0
+        && (state.n_arm_rad() as f64 - arm_pos_center).abs() < 1.0
+        && (state.n_pendulum_vel() as f64 - pend_vel_center).abs() < 1.0
+        && (state.n_arm_vel() as f64 - arm_vel_center).abs() < 1.0
     {
         return 500.0;
     }
 
     let position_reward = {
         const MAX_REWARD: f64 = 10.0;
-        let pendulum_pos_error = (pend_pos_center - state.n_pendulum_rad as f64).powi(2);
-        let arm_pos_error = (arm_pos_center - state.n_arm_rad as f64).powi(2);
+        let pendulum_pos_error = (pend_pos_center - state.n_pendulum_rad() as f64).powi(2);
+        let arm_pos_error = (arm_pos_center - state.n_arm_rad() as f64).powi(2);
         MAX_REWARD - (0.2 * pendulum_pos_error + 0.1 * arm_pos_error)
     };
 
     let velocity_penalty = {
-        let pendulum_vel_error = (pend_vel_center - state.n_pendulum_vel as f64).powi(2);
-        let arm_vel_error = (arm_vel_center - state.n_arm_vel as f64).powi(2);
+        let pendulum_vel_error = (pend_vel_center - state.n_pendulum_vel() as f64).powi(2);
+        let arm_vel_error = (arm_vel_center - state.n_arm_vel() as f64).powi(2);
         0.001 * pendulum_vel_error + 0.002 * arm_vel_error
     };
 

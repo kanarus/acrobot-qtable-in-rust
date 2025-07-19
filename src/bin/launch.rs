@@ -1,17 +1,12 @@
-use acrobot_qtable::TrainedAgent;
+use acrobot_qtable::{TrainedAgent, AcrobotState, AcrobotStateInit};
 use quarc::{Q2Usb, QErr};
 use std::f64::consts::PI;
 
-struct InvertedPendulum<C: InvertedPendulumController> {
+struct InvertedPendulum {
     iodevice: Q2Usb,
-    controller: C,
     torque: f64,
     state: InvertedPendulumState,
     log: InvertedPendulumLog,
-}
-trait InvertedPendulumController {
-    fn determine_torque(&self, state: &InvertedPendulumState) -> f64;
-    fn after_termination(&self, state: &InvertedPendulumState, log: &InvertedPendulumLog);
 }
 struct InvertedPendulumState {
     theta: f64,
@@ -31,7 +26,7 @@ struct InvertedPendulumLog {
     dt: f64,
 }
 
-impl<C: InvertedPendulumController> InvertedPendulum<C> {
+impl InvertedPendulum {
     /* mechanical parameters of the inverted pendulum */
     const LR: f64 = 0.2159;
     const JR: f64 = 9.9829e-4;
@@ -54,12 +49,13 @@ impl<C: InvertedPendulumController> InvertedPendulum<C> {
 
     /* acceleration of gravity */
     const G: f64 = 9.81;
+}
 
-    fn new(controller: C) -> Result<Self, QErr> {
+impl InvertedPendulum {
+    fn new() -> Result<Self, QErr> {
         let iodevice = Q2Usb::new()?;
         Ok(Self {
             iodevice,
-            controller,
             torque: 0.,
             state: InvertedPendulumState::new(),
             log: InvertedPendulumLog {
@@ -75,10 +71,6 @@ impl<C: InvertedPendulumController> InvertedPendulum<C> {
             },
         })
     }
-
-    fn torque_to_voltage(&self) -> f64 {
-        self.torque / Self::AM + self.state.thetadot * Self::BM
-    }
 }
 impl InvertedPendulumState {
     fn new() -> Self {
@@ -89,21 +81,118 @@ impl InvertedPendulumState {
             alphadot: 0.,
         }
     }
-    fn from_theta_alphaf(&self, theta: f64, alphaf: f64) -> Self {
-        let alpha = alphaf % (2. * PI) - PI;
-        let thetadot = s
+}
+impl InvertedPendulumLog {
+    fn new() -> Self {
+        Self {
+            theta: 0.,
+            alpha: PI,
+            thetadot: 0.,
+            alphadot: 0.,
+            alphaf: 0.,
+            torque: 0.,
+            voltage: 0.,
+            time: 0.,
+            dt: 0.,
+        }
     }
 }
 
-fn main() {
+trait InvertedPendulumController {
+    fn determine_torque(&self, state: &InvertedPendulumState) -> f64;
+    #[allow(unused_variables)]
+    fn after_termination(&self, state: &InvertedPendulumState, log: &InvertedPendulumLog) {}
+}
+
+struct RunConfig {
+    sample_time: f64,
+    simulation_time: f64,
+}
+
+impl InvertedPendulum {    
+    /// convert current `torque` to voltage, and input it to the device
+    fn input_torque(&mut self) -> Result<(), QErr> {
+        let voltage = self.torque / Self::AM + self.state.thetadot * Self::BM;
+        self.iodevice.write_voltage(voltage.clamp(-5.0, 5.0))?;
+        Ok(())
+    }
+
+    fn run(
+        self,
+        controller: impl InvertedPendulumController,
+        config: RunConfig,
+    ) -> Result<(), QErr> {
+        struct Run<C: InvertedPendulumController> {
+            inverted_pendulum: InvertedPendulum,
+            controller: C,
+            config: RunConfig,
+        }
+        impl<C: InvertedPendulumController> Drop for Run<C> {
+            fn drop(&mut self) {
+                self.controller.after_termination(
+                    &self.inverted_pendulum.state,
+                    &self.inverted_pendulum.log
+                );
+            }
+        }
+
+        let mut prev_theta = self.log.theta;
+        let mut prev_alpha = self.log.alpha;
+        let mut prev_elapsed_secs = 0.0;
+                
+        let mut r = Run { inverted_pendulum: self, controller, config };
+        
+        let t = std::time::Instant::now();
+        while prev_elapsed_secs < r.config.simulation_time {
+            let dt = {
+                let elapsed_secs = t.elapsed().as_secs_f64();
+                let dt = elapsed_secs - prev_elapsed_secs;
+                prev_elapsed_secs = elapsed_secs;
+                dt
+            };
+            
+            let (alpha, theta, alphadot, thetadot) = {
+                let (theta, alphaf) = r.inverted_pendulum.iodevice.read_theta_and_alpha()?;
+                let alpha = alphaf % (2.0 * PI) - PI;
+                let thetadot = (theta - prev_theta) / dt;
+                let alphadot = (alpha - prev_alpha) / dt;
+                prev_theta = theta;
+                prev_alpha = alpha;
+                (alpha, theta, alphadot, thetadot)
+            };
+        }
+        
+        Ok(())
+    }    
+}
+
+impl InvertedPendulumController for TrainedAgent {
+    fn determine_torque(&self, state: &InvertedPendulumState) -> f64 {
+        let state = AcrobotState::new(AcrobotStateInit {
+            arm_rad: state.theta,
+            arm_vel: state.thetadot,
+            pendulum_rad: state.alpha,
+            pendulum_vel: state.alphadot,
+            n_arm_digitization: self.n_arm_digitization(),
+            n_pendulum_digitization: self.n_pendulum_digitization(),
+        });
+        if state.should_finish_episode() {
+            0.0
+        } else {
+            self.get_action(state).torque
+        }
+    }
+}
+
+fn main() -> Result<(), QErr> {
     let mut args = std::env::args().skip(1);
     let target_agent_path = args.next().expect("Usage: simulate <target_agent_path>");
 
     println!("Loading trained agent from `{target_agent_path}`...");
 
-    let t = TrainedAgent::load(&target_agent_path).expect(&format!("Failed to load trained agent from file `{target_agent_path}`"));
+    let controller = TrainedAgent::load(&target_agent_path).expect(&format!("Failed to load trained agent from file `{target_agent_path}`"));
 
-    let mut q2usb = Q2Usb::new().expect("can't initialize Q2Usb");
+    let ip = InvertedPendulum::new()?;
 
     todo!()
 }

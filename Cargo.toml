@@ -5,9 +5,9 @@ edition = "2024"
 authors = ["kanarus <kanarus786@gmail.com>"]
 
 [dependencies]
-oxide_control = { path = "./rust-control/oxide_control" }
-qtable = { path = "./rust-control/qtable" }
-quarc = { path = "./rust-control/quarc" }
+oxide_control = { path = "../../rust-control/oxide_control" }
+qtable = { path = "../../rust-control/qtable" }
+quarc = { path = "../../rust-control/quarc" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 rand = "0.9"

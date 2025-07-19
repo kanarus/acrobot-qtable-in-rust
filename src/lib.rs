@@ -70,6 +70,7 @@ pub struct AcrobotObservation {
     pub shoulder_orientation: Orientation,
     pub elbow_velocity: f64,
     pub shoulder_velocity: f64,
+    __: ()
 }
 impl oxide_control::Observation for AcrobotObservation {
     type Physics = Acrobot;
@@ -84,7 +85,58 @@ impl oxide_control::Observation for AcrobotObservation {
             shoulder_orientation: Orientation::from_rad(shoulder_rad),
             elbow_velocity,
             shoulder_velocity,
+            __: (),
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct AcrobotState(AcrobotStateInit);
+#[derive(Clone, Copy)]
+pub struct AcrobotStateInit {
+    pub arm_rad: f64,
+    pub arm_vel: f64,
+    pub pendulum_rad: f64,
+    pub pendulum_vel: f64,
+    pub n_arm_digitization: usize,
+    pub n_pendulum_digitization: usize,
+}
+impl AcrobotState {
+    pub fn new(init: AcrobotStateInit) -> Self {
+        Self(init)
+    }
+    
+    pub fn n_arm_rad(&self) -> usize {
+        np::digitize(self.0.arm_rad, &np::linspace(-0.9 * PI, 0.9 * PI, self.0.n_arm_digitization + 1)[1..self.0.n_arm_digitization])
+    }
+    pub fn n_pendulum_rad(&self) -> usize {
+        np::digitize(self.0.pendulum_rad, &np::linspace(-0.2 * PI, 0.2 * PI, self.0.n_pendulum_digitization + 1)[1..self.0.n_pendulum_digitization])
+    }
+    pub fn n_arm_vel(&self) -> usize {
+        np::digitize(self.0.arm_vel.clamp(-8.0, 8.0), &np::linspace(-8.0, 8.0, self.0.n_arm_digitization + 1)[1..self.0.n_arm_digitization])
+    }
+    pub fn n_pendulum_vel(&self) -> usize {
+        np::digitize(self.0.pendulum_vel.clamp(-8.0, 8.0), &np::linspace(-8.0, 8.0, self.0.n_pendulum_digitization + 1)[1..self.0.n_pendulum_digitization])
+    }
+    pub fn digitized_state(&self) -> usize {
+        let d_arm = self.0.n_arm_digitization;
+        let d_pendulum = self.0.n_pendulum_digitization;
+
+        let n_arm_rad = self.n_arm_rad();
+        let n_arm_vel = self.n_arm_vel();
+        let n_pendulum_rad = self.n_pendulum_rad();
+        let n_pendulum_vel = self.n_pendulum_vel();
+
+        n_pendulum_rad + n_pendulum_vel * d_pendulum + n_arm_rad * d_pendulum.pow(2) + n_arm_vel * d_pendulum.pow(2) * d_arm
+    }
+    pub fn should_finish_episode(&self) -> bool {
+        if self.n_arm_rad() <= 0 || self.0.n_arm_digitization <= self.n_arm_rad() {
+            return true; // Arm is out of bounds
+        }
+        if self.n_pendulum_rad() <= 0 || self.0.n_pendulum_digitization <= self.n_pendulum_rad() {
+            return true; // Pendulum is out of bounds
+        }
+        false
     }
 }
 
@@ -94,47 +146,16 @@ pub struct AcrobotBalanceTask {
     pub action_size: usize,
     pub get_reward: fn(&AcrobotBalanceTask, state: &AcrobotState, action: &AcrobotAction) -> f64,
 }
-#[derive(Clone, Copy)]
-pub struct AcrobotState {
-    pub n_arm_rad: usize,
-    pub n_pendulum_rad: usize,
-    pub n_arm_vel: usize,
-    pub n_pendulum_vel: usize,
-    pub digitized_state: usize,
-}
 impl AcrobotBalanceTask {
     pub fn state(&self, observation: &AcrobotObservation) -> AcrobotState {
-        let d_arm = self.n_arm_digitization;
-        let d_pendulum = self.n_pendulum_digitization;
-        let arm_rad = observation.shoulder_orientation.to_rad();
-        let arm_vel = observation.shoulder_velocity;
-        let pendulum_rad = observation.elbow_orientation.to_rad();
-        let pendulum_vel = observation.elbow_velocity;
-
-        let n_arm_rad = np::digitize(arm_rad, &np::linspace(-0.9 * PI, 0.9 * PI, d_arm + 1)[1..d_arm]);
-        let n_arm_vel = np::digitize(arm_vel.clamp(-8.0, 8.0), &np::linspace(-8.0, 8.0, d_arm + 1)[1..d_arm]);
-        let n_pendulum_rad = np::digitize(pendulum_rad, &np::linspace(-0.2 * PI, 0.2 * PI, d_pendulum + 1)[1..d_pendulum]);
-        let n_pendulum_vel = np::digitize(pendulum_vel.clamp(-8.0, 8.0), &np::linspace(-8.0, 8.0, d_pendulum + 1)[1..d_pendulum]);
-
-        let digitized_state = n_pendulum_rad + n_pendulum_vel * d_pendulum + n_arm_rad * d_pendulum.pow(2) + n_arm_vel * d_pendulum.pow(2) * d_arm;
-
-        AcrobotState {
-            n_arm_rad,
-            n_pendulum_rad,
-            n_arm_vel,
-            n_pendulum_vel,
-            digitized_state,
-        }
-    }
-
-    pub fn should_finish_episode(&self, state: &AcrobotState) -> bool {
-        if state.n_arm_rad <= 0 || self.n_arm_digitization <= state.n_arm_rad {
-            return true; // Arm is out of bounds
-        }
-        if state.n_pendulum_rad <= 0 || self.n_pendulum_digitization <= state.n_pendulum_rad {
-            return true; // Pendulum is out of bounds
-        }
-        false
+        AcrobotState::new(AcrobotStateInit {
+            arm_rad: observation.shoulder_orientation.to_rad(),
+            arm_vel: observation.shoulder_velocity,
+            pendulum_rad: observation.elbow_orientation.to_rad(),
+            pendulum_vel: observation.elbow_velocity,
+            n_arm_digitization: self.n_arm_digitization,
+            n_pendulum_digitization: self.n_pendulum_digitization,
+        })
     }
 }
 impl oxide_control::Task for AcrobotBalanceTask {
@@ -155,8 +176,7 @@ impl oxide_control::Task for AcrobotBalanceTask {
     }
 
     fn should_finish_episode(&self, observation: &Self::Observation) -> bool {
-        let state = self.state(observation);
-        self.should_finish_episode(&state)
+        self.state(observation).should_finish_episode()
     }
 
     fn get_reward(&self, observation: &Self::Observation, action: &Self::Action) -> f64 {
@@ -169,7 +189,7 @@ impl oxide_control::Task for AcrobotBalanceTask {
 pub struct AcrobotAction {
     #[serde(with = "serde_actuator_id")]
     actuator_id: ObjectId<obj::Actuator>,
-    torque: f64,
+    pub torque: f64,
     pub digitization_index: usize,
 }
 mod serde_actuator_id {
@@ -246,17 +266,17 @@ impl QTableAgent {
     }
 
     pub fn get_action<S: qtable::Strategy>(&self, state: AcrobotState) -> AcrobotAction {
-        let qtable_state = qtable::State::new_on(&self.qtable, state.digitized_state).unwrap();
+        let qtable_state = qtable::State::new_on(&self.qtable, state.digitized_state()).unwrap();
         let qtable_action = self.qtable.next_action::<S>(qtable_state);
         self.digitized_actions[qtable_action.index()]
     }
 
     pub fn learn(&mut self, state: AcrobotState, action: AcrobotAction, reward: f64, next_state: AcrobotState) {
         self.qtable.update(QUpdate {
-            state: qtable::State::new_on(&self.qtable, state.digitized_state).unwrap(),
+            state: qtable::State::new_on(&self.qtable, state.digitized_state()).unwrap(),
             action: qtable::Action::new_on(&self.qtable, action.digitization_index).unwrap(),
             reward,
-            next_state: qtable::State::new_on(&self.qtable, next_state.digitized_state).unwrap(),
+            next_state: qtable::State::new_on(&self.qtable, next_state.digitized_state()).unwrap(),
         });
     }
     pub fn decay_alpha_with_rate(&mut self, rate: f64) {
