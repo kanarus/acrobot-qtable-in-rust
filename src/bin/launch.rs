@@ -1,4 +1,4 @@
-use acrobot_qtable::{TrainedAgent, AcrobotState, AcrobotStateInit};
+use acrobot_qtable::{AcrobotState, AcrobotStateInit, TrainedAgent};
 use quarc::{Q2Usb, QErr};
 use std::f64::consts::PI;
 
@@ -108,8 +108,16 @@ struct RunConfig {
     sample_time: f64,
     simulation_time: f64,
 }
+impl Default for RunConfig {
+    fn default() -> Self {
+        Self {
+            sample_time: 0.05,
+            simulation_time: 1.0,
+        }
+    }
+}
 
-impl InvertedPendulum {    
+impl InvertedPendulum {
     /// convert current `torque` to voltage, and input it to the device
     fn input_torque(&mut self) -> Result<(), QErr> {
         let voltage = self.torque / Self::AM + self.state.thetadot * Self::BM;
@@ -117,31 +125,29 @@ impl InvertedPendulum {
         Ok(())
     }
 
-    fn run(
-        self,
-        controller: impl InvertedPendulumController,
-        config: RunConfig,
-    ) -> Result<(), QErr> {
+    fn run(self, controller: impl InvertedPendulumController, config: RunConfig) -> Result<(), QErr> {
         struct Run<C: InvertedPendulumController> {
             inverted_pendulum: InvertedPendulum,
             controller: C,
             config: RunConfig,
         }
         impl<C: InvertedPendulumController> Drop for Run<C> {
+            // Automatically called when the simulation ends, either normally or due to an error / early termination.
             fn drop(&mut self) {
-                self.controller.after_termination(
-                    &self.inverted_pendulum.state,
-                    &self.inverted_pendulum.log
-                );
+                self.controller.after_termination(&self.inverted_pendulum.state, &self.inverted_pendulum.log);
             }
         }
 
         let mut prev_theta = self.log.theta;
         let mut prev_alpha = self.log.alpha;
         let mut prev_elapsed_secs = 0.0;
-                
-        let mut r = Run { inverted_pendulum: self, controller, config };
-        
+
+        let mut r = Run {
+            inverted_pendulum: self,
+            controller,
+            config,
+        };
+
         let t = std::time::Instant::now();
         while prev_elapsed_secs < r.config.simulation_time {
             let dt = {
@@ -150,7 +156,7 @@ impl InvertedPendulum {
                 prev_elapsed_secs = elapsed_secs;
                 dt
             };
-            
+
             let (alpha, theta, alphadot, thetadot) = {
                 let (theta, alphaf) = r.inverted_pendulum.iodevice.read_theta_and_alpha()?;
                 let alpha = alphaf % (2.0 * PI) - PI;
@@ -160,10 +166,15 @@ impl InvertedPendulum {
                 prev_alpha = alpha;
                 (alpha, theta, alphadot, thetadot)
             };
+
+            if theta.abs() > PI {
+                println!("Emergency stop: theta out of bounds (|theta| > PI)");
+                break;
+            }
         }
-        
+
         Ok(())
-    }    
+    }
 }
 
 impl InvertedPendulumController for TrainedAgent {
@@ -176,11 +187,7 @@ impl InvertedPendulumController for TrainedAgent {
             n_arm_digitization: self.n_arm_digitization(),
             n_pendulum_digitization: self.n_pendulum_digitization(),
         });
-        if state.should_finish_episode() {
-            0.0
-        } else {
-            self.get_action(state).torque
-        }
+        if state.should_finish_episode() { 0.0 } else { self.get_action(state).torque }
     }
 }
 
@@ -189,10 +196,13 @@ fn main() -> Result<(), QErr> {
     let target_agent_path = args.next().expect("Usage: simulate <target_agent_path>");
 
     println!("Loading trained agent from `{target_agent_path}`...");
-
     let controller = TrainedAgent::load(&target_agent_path).expect(&format!("Failed to load trained agent from file `{target_agent_path}`"));
 
+    println!("Connecting to the interted pendulum...");
     let ip = InvertedPendulum::new()?;
 
-    todo!()
+    ip.run(controller, Default::default())?;
+
+    println!("Simulation completed successfully.");
+    Ok(())
 }
