@@ -115,11 +115,6 @@ impl InvertedPendulum {
         (torque / Self::AM + self.state.thetadot * Self::BM).clamp(-5.0, 5.0)
     }
 
-    fn write_voltage(&mut self, voltage: f64) -> Result<(), QErr> {
-        self.iodevice.write_voltage(voltage)?;
-        Ok(())
-    }
-
     fn run(self, controller: impl InvertedPendulumController, config: RunConfig) -> Result<(), QErr> {
         struct Run<C: InvertedPendulumController> {
             inverted_pendulum: InvertedPendulum,
@@ -175,7 +170,7 @@ impl InvertedPendulum {
 
             let torque = r.controller.determine_torque(&r.inverted_pendulum.state);
             let voltage = r.inverted_pendulum.voltage_for_required_torque(torque);
-            r.inverted_pendulum.write_voltage(voltage)?;
+            r.inverted_pendulum.iodevice.write_voltage(voltage)?;
 
             r.inverted_pendulum.log.push(InvertedPendulumLogEntry {
                 theta: r.inverted_pendulum.state.theta,
