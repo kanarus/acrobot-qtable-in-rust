@@ -4,9 +4,8 @@ use std::f64::consts::PI;
 
 struct InvertedPendulum {
     iodevice: Q2Usb,
-    torque: f64,
     state: InvertedPendulumState,
-    log: InvertedPendulumLog,
+    log: Vec<InvertedPendulumLogEntry>,
 }
 struct InvertedPendulumState {
     theta: f64,
@@ -14,7 +13,8 @@ struct InvertedPendulumState {
     thetadot: f64,
     alphadot: f64,
 }
-struct InvertedPendulumLog {
+#[allow(unused)]
+struct InvertedPendulumLogEntry {
     theta: f64,
     alpha: f64,
     thetadot: f64,
@@ -26,6 +26,7 @@ struct InvertedPendulumLog {
     dt: f64,
 }
 
+#[allow(unused)]
 impl InvertedPendulum {
     /* mechanical parameters of the inverted pendulum */
     const LR: f64 = 0.2159;
@@ -56,9 +57,13 @@ impl InvertedPendulum {
         let iodevice = Q2Usb::new()?;
         Ok(Self {
             iodevice,
-            torque: 0.,
-            state: InvertedPendulumState::new(),
-            log: InvertedPendulumLog {
+            state: InvertedPendulumState {
+                theta: 0.,
+                alpha: 0.,
+                thetadot: 0.,
+                alphadot: 0.,
+            },
+            log: vec![InvertedPendulumLogEntry {
                 theta: 0.,
                 alpha: PI,
                 thetadot: 0.,
@@ -68,40 +73,28 @@ impl InvertedPendulum {
                 voltage: 0.,
                 time: 0.,
                 dt: 0.,
-            },
+            }],
         })
-    }
-}
-impl InvertedPendulumState {
-    fn new() -> Self {
-        Self {
-            theta: 0.,
-            alpha: 0.,
-            thetadot: 0.,
-            alphadot: 0.,
-        }
-    }
-}
-impl InvertedPendulumLog {
-    fn new() -> Self {
-        Self {
-            theta: 0.,
-            alpha: PI,
-            thetadot: 0.,
-            alphadot: 0.,
-            alphaf: 0.,
-            torque: 0.,
-            voltage: 0.,
-            time: 0.,
-            dt: 0.,
-        }
     }
 }
 
 trait InvertedPendulumController {
     fn determine_torque(&self, state: &InvertedPendulumState) -> f64;
     #[allow(unused_variables)]
-    fn after_termination(&self, state: &InvertedPendulumState, log: &InvertedPendulumLog) {}
+    fn after_termination(&self, state: &InvertedPendulumState, log: &[InvertedPendulumLogEntry]) {}
+}
+impl InvertedPendulumController for TrainedAgent {
+    fn determine_torque(&self, state: &InvertedPendulumState) -> f64 {
+        let state = AcrobotState::new(AcrobotStateInit {
+            arm_rad: state.theta,
+            arm_vel: state.thetadot,
+            pendulum_rad: state.alpha,
+            pendulum_vel: state.alphadot,
+            n_arm_digitization: self.n_arm_digitization(),
+            n_pendulum_digitization: self.n_pendulum_digitization(),
+        });
+        if state.should_finish_episode() { 0.0 } else { self.get_action(state).torque }
+    }
 }
 
 struct RunConfig {
@@ -118,10 +111,12 @@ impl Default for RunConfig {
 }
 
 impl InvertedPendulum {
-    /// convert current `torque` to voltage, and input it to the device
-    fn input_torque(&mut self) -> Result<(), QErr> {
-        let voltage = self.torque / Self::AM + self.state.thetadot * Self::BM;
-        self.iodevice.write_voltage(voltage.clamp(-5.0, 5.0))?;
+    fn voltage_for_required_torque(&self, torque: f64) -> f64 {
+        (torque / Self::AM + self.state.thetadot * Self::BM).clamp(-5.0, 5.0)
+    }
+
+    fn write_voltage(&mut self, voltage: f64) -> Result<(), QErr> {
+        self.iodevice.write_voltage(voltage)?;
         Ok(())
     }
 
@@ -138,8 +133,8 @@ impl InvertedPendulum {
             }
         }
 
-        let mut prev_theta = self.log.theta;
-        let mut prev_alpha = self.log.alpha;
+        let mut prev_theta = self.log[0].theta;
+        let mut prev_alpha = self.log[0].alpha;
         let mut prev_elapsed_secs = 0.0;
 
         let mut r = Run {
@@ -150,44 +145,57 @@ impl InvertedPendulum {
 
         let t = std::time::Instant::now();
         while prev_elapsed_secs < r.config.simulation_time {
+            let time = t.elapsed().as_secs_f64();
             let dt = {
-                let elapsed_secs = t.elapsed().as_secs_f64();
-                let dt = elapsed_secs - prev_elapsed_secs;
-                prev_elapsed_secs = elapsed_secs;
+                let dt = time - prev_elapsed_secs;
+                prev_elapsed_secs = time;
                 dt
             };
 
-            let (alpha, theta, alphadot, thetadot) = {
-                let (theta, alphaf) = r.inverted_pendulum.iodevice.read_theta_and_alpha()?;
+            let (theta, alphaf) = r.inverted_pendulum.iodevice.read_theta_and_alpha()?;
+
+            r.inverted_pendulum.state = {
                 let alpha = alphaf % (2.0 * PI) - PI;
                 let thetadot = (theta - prev_theta) / dt;
                 let alphadot = (alpha - prev_alpha) / dt;
                 prev_theta = theta;
                 prev_alpha = alpha;
-                (alpha, theta, alphadot, thetadot)
+                InvertedPendulumState {
+                    theta,
+                    alpha,
+                    thetadot,
+                    alphadot,
+                }
             };
 
-            if theta.abs() > PI {
+            if r.inverted_pendulum.state.theta.abs() > PI {
                 println!("Emergency stop: theta out of bounds (|theta| > PI)");
                 break;
+            }
+
+            let torque = r.controller.determine_torque(&r.inverted_pendulum.state);
+            let voltage = r.inverted_pendulum.voltage_for_required_torque(torque);
+            r.inverted_pendulum.write_voltage(voltage)?;
+
+            r.inverted_pendulum.log.push(InvertedPendulumLogEntry {
+                theta: r.inverted_pendulum.state.theta,
+                alpha: r.inverted_pendulum.state.alpha,
+                thetadot: r.inverted_pendulum.state.thetadot,
+                alphadot: r.inverted_pendulum.state.alphadot,
+                alphaf,
+                torque,
+                voltage,
+                time,
+                dt,
+            });
+
+            // Wait until the next sample time
+            while t.elapsed().as_secs_f64() < time + r.config.sample_time {
+                std::thread::yield_now();
             }
         }
 
         Ok(())
-    }
-}
-
-impl InvertedPendulumController for TrainedAgent {
-    fn determine_torque(&self, state: &InvertedPendulumState) -> f64 {
-        let state = AcrobotState::new(AcrobotStateInit {
-            arm_rad: state.theta,
-            arm_vel: state.thetadot,
-            pendulum_rad: state.alpha,
-            pendulum_vel: state.alphadot,
-            n_arm_digitization: self.n_arm_digitization(),
-            n_pendulum_digitization: self.n_pendulum_digitization(),
-        });
-        if state.should_finish_episode() { 0.0 } else { self.get_action(state).torque }
     }
 }
 
