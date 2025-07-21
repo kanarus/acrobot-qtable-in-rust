@@ -6,32 +6,22 @@ use ::std::f64::consts::PI;
 
 pub struct Acrobot {
     raw: oxide_control::RawPhysics,
-    elbow_id: ObjectId<obj::Joint>,
-    shoulder_id: ObjectId<obj::Joint>,
+    elbow_id: ObjectId<joint::Hinge>,
+    shoulder_id: ObjectId<joint::Hinge>,
     actuator_id: ObjectId<obj::Actuator>,
 }
 impl Acrobot {
     pub fn new() -> Self {
         let raw = oxide_control::RawPhysics::from_xml("acrobot.xml").unwrap();
-        let elbow_id = raw.object_id_of::<obj::Joint>("elbow").unwrap();
-        let shoulder_id = raw.object_id_of::<obj::Joint>("shoulder").unwrap();
-        let actuator_id = raw.object_id_of::<obj::Actuator>("shoulder").unwrap();
+        let elbow_id = raw.object_id::<joint::Hinge>("elbow").unwrap();
+        let shoulder_id = raw.object_id::<joint::Hinge>("shoulder").unwrap();
+        let actuator_id = raw.object_id::<obj::Actuator>("shoulder").unwrap();
         Self {
             raw,
             elbow_id,
             shoulder_id,
             actuator_id,
         }
-    }
-
-    pub fn elbow_id(&self) -> ObjectId<obj::Joint> {
-        self.elbow_id
-    }
-    pub fn shoulder_id(&self) -> ObjectId<obj::Joint> {
-        self.shoulder_id
-    }
-    pub fn actuator_id(&self) -> ObjectId<obj::Actuator> {
-        self.actuator_id
     }
 }
 impl std::ops::Deref for Acrobot {
@@ -76,10 +66,10 @@ impl oxide_control::Observation for AcrobotObservation {
     type Physics = Acrobot;
 
     fn generate(physics: &Self::Physics) -> Self {
-        let [elbow_rad] = physics.qpos::<joint::Hinge>(physics.elbow_id).unwrap();
-        let [shoulder_rad] = physics.qpos::<joint::Hinge>(physics.shoulder_id).unwrap();
-        let [elbow_velocity] = physics.qvel::<joint::Hinge>(physics.elbow_id).unwrap();
-        let [shoulder_velocity] = physics.qvel::<joint::Hinge>(physics.shoulder_id).unwrap();
+        let [elbow_rad] = physics.qpos(physics.elbow_id);
+        let [shoulder_rad] = physics.qpos(physics.shoulder_id);
+        let [elbow_velocity] = physics.qvel(physics.elbow_id);
+        let [shoulder_velocity] = physics.qvel(physics.shoulder_id);
         Self {
             elbow_orientation: Orientation::from_rad(elbow_rad),
             shoulder_orientation: Orientation::from_rad(shoulder_rad),
@@ -169,10 +159,10 @@ impl oxide_control::Task for AcrobotBalanceTask {
 
     fn init_episode(&self, physics: &mut Self::Physics) {
         let (elbow_id, shoulder_id) = (physics.elbow_id, physics.shoulder_id);
-        physics.set_qpos::<joint::Hinge>(elbow_id, [np::random(-0.1, 0.1)]).unwrap();
-        physics.set_qvel::<joint::Hinge>(elbow_id, [np::random(-0.1, 0.1)]).unwrap();
-        physics.set_qpos::<joint::Hinge>(shoulder_id, [np::random(-0.1, 0.1)]).unwrap();
-        physics.set_qvel::<joint::Hinge>(shoulder_id, [np::random(-0.1, 0.1)]).unwrap();
+        physics.set_qpos(elbow_id, [np::random(-0.1, 0.1)]);
+        physics.set_qvel(elbow_id, [np::random(-0.1, 0.1)]);
+        physics.set_qpos(shoulder_id, [np::random(-0.1, 0.1)]);
+        physics.set_qvel(shoulder_id, [np::random(-0.1, 0.1)]);
     }
 
     fn should_finish_episode(&self, observation: &Self::Observation) -> bool {

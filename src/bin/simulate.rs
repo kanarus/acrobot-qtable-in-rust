@@ -35,9 +35,9 @@ fn main() {
     let mut scn = mjvScene::default();
     let mut con = mjrContext::default();
     let mut cam = mjvCamera::default();
-    cam.set_fixedcamid(env.physics().object_id_of("fixed").unwrap());
-    mjv_makeScene(&env.physics().model().binding, &mut scn, 2000);
-    mjr_makeContext(&env.physics().model().binding, &mut con, mjtFontScale::X150);
+    cam.set_fixedcamid(env.physics().object_id("fixed").unwrap());
+    mjv_makeScene(&env.physics().model(), &mut scn, 2000);
+    mjr_makeContext(&env.physics().model(), &mut con, mjtFontScale::X150);
 
     let mut obs = env.reset();
     while !window.should_close() {
@@ -62,8 +62,8 @@ fn main() {
 
         let (model, data) = env.physics_mut().model_datamut();
         mjv_updateScene(
-            &model.binding,
-            &mut data.binding,
+            model,
+            data,
             &opt,
             None, /* No perturbation */
             &mut cam,
