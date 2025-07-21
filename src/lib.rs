@@ -222,10 +222,8 @@ pub struct QTableAgentConfig {
 }
 impl QTableAgent {
     fn make_digitized_actions(acrobot: &Acrobot, config: &QTableAgentConfig) -> Vec<AcrobotAction> {
-        let mut ctrlrange = acrobot.model().actuator_ctrlrange(acrobot.actuator_id);
-        if ctrlrange.start.is_nan() || ctrlrange.end.is_nan() || ctrlrange == (0.0..0.0) {
-            ctrlrange = oxide_control::physics::mjMINVAL..oxide_control::physics::mjMAXVAL;
-        }
+        let ctrlrange = acrobot.model().actuator_ctrlrange(acrobot.actuator_id).unwrap();
+        assert_eq!(ctrlrange, -1.0..1.0);
         let digitized_torques = np::linspace(ctrlrange.start, ctrlrange.end, config.action_size);
         digitized_torques
             .into_iter()
